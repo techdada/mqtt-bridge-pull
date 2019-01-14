@@ -100,7 +100,7 @@ class picoSolar implements poller {
 		if (!$this->publishto) {
 			if (!$this->retrieve()) {
 				echo $this->error."\n";
-				return null;
+				return [];
 			}			
 		}
 		return $this->publishto;
