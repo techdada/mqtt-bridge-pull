@@ -21,7 +21,7 @@ class weishauptWP implements poller {
 		$this->iphost = $iphost;
 		$this->user = $user;
 		$this->password = $password;
-		$this->url = $this->protocol."://{$this->iphost}/http/index/j_operating_custom.html";
+		$this->url = $this->protocol."://{$this->iphost}/http/mqtt/adapter.html";
 	}
 	
 	protected function _normalizeDate(&$datum) {
@@ -70,11 +70,10 @@ class weishauptWP implements poller {
 		
 	//connect to url
 		$json = file_get_contents($this->url,false,$this->_authHeader());
-		 
-		$this->data = json_decode($json,true);
+		$json = mb_convert_encoding($json, 'HTML-ENTITIES', "UTF-8");
 		$json = preg_replace('/<!--tagparser.*-->/','',$json);
-		$this->data = @json_decode($json,true);
-		var_dump($this->data);
+		$this->data = json_decode($json,true);
+//		$this->data = @json_decode($json,true);
 		if (!is_array($this->data) && !is_object($this->data)) {
 			//no valid data
 			$this->error = 'Invalid JSON: '.$json;
@@ -117,6 +116,7 @@ class weishauptWP implements poller {
 					$this->publishto['vorratstank'] = $value;
 					break;
 				case 'heizunganforderung1':
+				case 'heizunganforderung':
 					$this->publishto['heizunganforderung'] = $value;
 					$skip = true;
 					break;
