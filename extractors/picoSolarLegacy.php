@@ -54,7 +54,7 @@ class picoSolarLegacy implements poller {
 	//connect to url
 
 		$html = file_get_contents($this->url,false,$this->_authHeader());
-		if ( !$html ) {
+		if ( !$html || empty($html) ) {
 			$this->error = 'Could not load data';
 		}
 		echo "Connected to {$this->url}\n";

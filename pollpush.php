@@ -37,9 +37,12 @@ if ($tls) {
 	$cafile = Properties::get('cafile');
 	if (!$cafile) $cafile = '/etc/ssl/certs/ca-bundle.crt';
 }
+echo "Using CA file $cafile\n";
 $mqttclient = new phpMQTT(Properties::get('broker'), Properties::get('broker_port'), uniqid('pollpush'), $cafile, $tls);
-$mqttclient->connect_auto(true,NULL,Properties::get('broker_user'),Properties::get('broker_pass'));
+echo "Connecting to ".Properties::get('broker').":".Properties::get('broker_port')." using User ".Properties::get('broker_user')."\n";
+if ($mqttclient->connect_auto(true,NULL,Properties::get('broker_user'),Properties::get('broker_pass'))) echo "Connected";
 
+echo "loading extractors\n";
 $extractors = array();
 $p_count = 1;
 while ($extractor = Properties::get('extractor'.$p_count)) {
