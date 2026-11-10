@@ -10,6 +10,7 @@ class picoSolar implements poller {
 	protected $curlobj;
 	protected $url;
 	protected $ch;
+	protected $error = 'Retrieval failed';
 	protected $protocol = 'http';
 	
 	protected $dxsEntries = array(
@@ -52,7 +53,6 @@ class picoSolar implements poller {
 			curl_close($this->ch);
 			return false;
 		}
-		echo "Connected to {$this->url}\n";
 		
 		// Errordefinitions
 		$constants = get_defined_constants(true);
@@ -63,7 +63,6 @@ class picoSolar implements poller {
 			}
 		}
 
-		echo "curl close\n";
 		curl_close($this->ch);
 	
 		 
@@ -71,15 +70,13 @@ class picoSolar implements poller {
 		$this->data = json_decode($json,true);
 	
 		if (!is_array($this->data)) {
-			$this->error = 'Invalid JSON: '.$json;
-			echo 'Letzter Fehler: ', $json_errors[json_last_error()], PHP_EOL, PHP_EOL;
+			$this->error = 'Invalid JSON: '.json_last_error_msg();
 			return false;
 		}
 
 		//distribute array to mqtt single topics
 		//$this->publishto = $this->data['dxsEntries'];
 		if (!isset($this->data['dxsEntries'])) {
-			echo "no dxsEntries found\n";
 			return;
 		}
  		foreach ($this->data['dxsEntries'] as $line) {
@@ -95,11 +92,12 @@ class picoSolar implements poller {
 		return "$dxsId unknown";
 	}
 	
+	public function getError() { return $this->error ?: 'Retrieval failed'; }
+
 	public function getData() {
 	//return all data to pollpush
 		if (!$this->publishto) {
 			if (!$this->retrieve()) {
-				echo $this->error."\n";
 				return [];
 			}			
 		}

@@ -1,0 +1,25 @@
+[Unit]
+Description=Poll devices and publish readings to MQTT
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=mqtt-bridge-pull
+Group=mqtt-bridge-pull
+WorkingDirectory=/opt/mqtt-bridge-pull
+RuntimeDirectory=mqtt-bridge-pull
+Environment=POLLPUSH_LOCK=/run/mqtt-bridge-pull/pollpush.lock
+ExecStart=/usr/bin/php /opt/mqtt-bridge-pull/pollpush.php --loop --config=/etc/mqtt-bridge-pull/config.properties
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=30s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mqtt-bridge-pull
+SyslogLevelPrefix=yes
+NoNewPrivileges=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

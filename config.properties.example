@@ -1,0 +1,11 @@
+broker=broker.host.com
+broker_port=8883
+broker_tls=tlsv1.2
+cafile=/etc/ssl/certs/ca-certificates.crt
+broker_user=buser
+broker_pass=bpass
+poll_interval=120
+log_level=info
+# Number extractors continuously, starting at 1.
+extractor1=home/solarinverter1/#,picoSolar,inverterhost
+#extractor2=home/heatpump/#,weishauptWP,heatpumphost,hpuser,hppass

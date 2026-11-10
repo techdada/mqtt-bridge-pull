@@ -1,75 +1,121 @@
 #!/usr/bin/env php
 <?php
-echo "load libraries\n";
-// config
-$path = dirname(realpath($argv[0]));
 use techdada\phpMQTT;
-require_once $path.'/lib/Properties.php';
-require_once $path.'/lib/phpMQTT.php';
-require_once $path.'/interfaces/poller.php';
+require_once __DIR__.'/lib/Properties.php';
+require_once __DIR__.'/lib/phpMQTT.php';
+require_once __DIR__.'/lib/BridgeLog.php';
+require_once __DIR__.'/interfaces/poller.php';
 
-$properties_file = $_SERVER['HOME'].'/.config/phpMQTTbridge/config.properties';
-if (!file_exists($properties_file)) {
-	file_put_contents($properties_file,"broker=broker.host.com\nbroker_tls=tlsv1.2\nbroker_port=8883\nbroker_user=buser\nbroker_pass=bpass\nextractor1=sensors/photovoltaics/inverter1/#,picoSolar,192.168.0.102");
-	echo "No config file found!\nInitial file created at $properties_file\nPlease review and start again";
-	exit;
-} else {
-	echo "load config from $properties_file\n";
+ini_set('display_errors', 'stderr');
+ini_set('log_errors', '1');
+ini_set('error_log', '/dev/stderr');
+error_reporting(E_ALL);
+
+$options = getopt('', ['loop', 'config:', 'interval:']);
+$config = $options['config'] ?? (getenv('HOME').'/.config/phpMQTTbridge/config.properties');
+if (!is_readable($config)) {
+    BridgeLog::error('Configuration is missing or unreadable: '.$config);
+    exit(1);
+}
+Properties::init($config);
+BridgeLog::$debug = strtolower(Properties::get('log_level', 'info')) === 'debug';
+$interval = filter_var($options['interval'] ?? Properties::get('poll_interval', '120'), FILTER_VALIDATE_INT);
+if ($interval === false || $interval < 1) {
+    BridgeLog::error('Polling interval must be a positive integer in seconds');
+    exit(1);
 }
 
-Properties::init($properties_file);
-
-if (file_exists('/tmp/pollpush.log')) {
-  rename('/tmp/pollpush.log','/tmp/pollpush.log-'.date('ymdHi'));
+// Do not unlink: concurrent processes must always lock the same inode.
+$lock = fopen(getenv('POLLPUSH_LOCK') ?: '/tmp/pollpush.lock', 'c');
+if ($lock === false) {
+    BridgeLog::error('Cannot open process lock');
+    exit(1);
+}
+if (!flock($lock, LOCK_EX | LOCK_NB, $wouldBlock)) {
+    BridgeLog::info($wouldBlock ? 'Another bridge process is running' : 'Cannot acquire process lock');
+    exit($wouldBlock ? 0 : 1);
 }
 
-if (file_exists('/tmp/pollpush.pid')) {
-  $pid = file_get_contents('/tmp/pollpush.pid');
-  if (posix_getpgid($pid)) {
-    posix_kill($pid,SIGTERM);
-  }
+$running = true;
+if (function_exists('pcntl_async_signals')) {
+    pcntl_async_signals(true);
+    $stop = function () use (&$running) { $running = false; };
+    pcntl_signal(SIGTERM, $stop);
+    pcntl_signal(SIGINT, $stop);
 }
-file_put_contents('/tmp/pollpush.pid',getmypid());
 
-
-$tls = Properties::get('broker_tls');
-if ($tls) {
-	$cafile = Properties::get('cafile');
-	if (!$cafile) $cafile = '/etc/ssl/certs/ca-bundle.crt';
+function pollCycle(&$running) {
+    $tls = Properties::get('broker_tls');
+    $cafile = $tls ? Properties::get('cafile', '/etc/ssl/certs/ca-bundle.crt') : null;
+    $mqtt = new phpMQTT(Properties::get('broker'), Properties::get('broker_port'), uniqid('pollpush'), $cafile, $tls);
+    $successful = 0;
+    $failed = 0;
+    try {
+        if (!$mqtt->connect(true, null, Properties::get('broker_user'), Properties::get('broker_pass'))) {
+            throw new RuntimeException('MQTT connection failed: '.$mqtt->lastError);
+        }
+        for ($i = 1; $running && ($extractor = Properties::get('extractor'.$i)); $i++) {
+            $parts = array_pad(explode(',', $extractor, 6), 6, '');
+            list($topic, $class, $host, $user, $pass, $extra) = $parts;
+            try {
+                if (!in_array($class, ['picoSolar', 'picoSolarLegacy', 'weishauptWP'], true)) {
+                    throw new RuntimeException('Unknown extractor class');
+                }
+                require_once __DIR__.'/extractors/'.$class.'.php';
+                if ($extra !== '') BridgeLog::warning('Extractor options are not supported: '.$class);
+                $poller = new $class($host, $user, $pass);
+                if (!$poller->retrieve()) throw new RuntimeException($poller->getError());
+                $data = $poller->getData();
+                if (!$data) throw new RuntimeException('No readings returned');
+            } catch (Throwable $error) {
+                BridgeLog::error($class.' at '.$host.': '.$error->getMessage());
+                $failed++;
+                continue;
+            }
+            foreach ($data as $key => $value) {
+                if (!$running) break;
+                $target = str_replace('#', $key, $topic);
+                if (!$mqtt->publish($target, $value, 0, true)) {
+                    throw new RuntimeException('MQTT publish failed for '.$target.': '.$mqtt->lastError);
+                }
+                BridgeLog::debug('Published '.$target.' = '.$value);
+                if (!$mqtt->proc(false)) throw new RuntimeException('MQTT processing failed: '.$mqtt->lastError);
+            }
+            if (!$running) break;
+            $target = explode('/', $topic);
+            $target[0] = 'tele';
+            $target = str_replace('#', 'STATUS', implode('/', $target));
+            $data['time'] = time();
+            $payload = json_encode($data, JSON_THROW_ON_ERROR);
+            if (!$mqtt->publish($target, $payload)) {
+                throw new RuntimeException('MQTT telemetry publish failed: '.$mqtt->lastError);
+            }
+            $successful++;
+        }
+        BridgeLog::info('Poll completed: '.$successful.' devices published, '.$failed.' failed');
+        return $failed === 0;
+    } finally {
+        if (is_resource($mqtt->getsocket())) $mqtt->close();
+    }
 }
-echo "Using CA file $cafile\n";
-$mqttclient = new phpMQTT(Properties::get('broker'), Properties::get('broker_port'), uniqid('pollpush'), $cafile, $tls);
-echo "Connecting to ".Properties::get('broker').":".Properties::get('broker_port')." using User ".Properties::get('broker_user')."\n";
-if ($mqttclient->connect_auto(true,NULL,Properties::get('broker_user'),Properties::get('broker_pass'))) echo "Connected";
 
-echo "loading extractors\n";
-$extractors = array();
-$p_count = 1;
-while ($extractor = Properties::get('extractor'.$p_count)) {
-	//$mqttclient->proc();
-	@list($topic,$class,$host,$user,$pass,$options) = explode(',',$extractor);
-	echo "processing $topic with $class at $host $user \n";
-	require_once $path.'/extractors/'.$class.'.php';
-	if ($options) echo "options not yet implemented\n";
-	$obj = new $class($host,$user,$pass);
-	$obj->retrieve();
-	foreach ($obj->getData() as $key=>$value) {
-		$t = str_replace('#',$key,$topic);
-		echo "Publish $t = $value\n";
-		$mqttclient->publish($t,$value,0,1);
-		$mqttclient->proc();
-	}
-	// also publish to telemetry:
-	$t = explode('/',$topic);
-	$t[0] = 'tele';
-	$t = join('/',$t);
-	$t = str_replace('#','STATUS',$t);
-	$data = $obj->getData();
-	$data['time'] = time();
-	echo "Published to ";
-	$mqttclient->publish($t,json_encode($data));
-	echo "$t \n";
-	$p_count++;
-}
-echo "finished\n";
-unlink('/tmp/pollpush.pid');
+BridgeLog::info('Bridge started'.(isset($options['loop']) ? '; interval '.$interval.' seconds' : '; single run'));
+$status = 0;
+do {
+    $started = microtime(true);
+    try {
+        $status = pollCycle($running) ? 0 : 1;
+    } catch (Throwable $error) {
+        BridgeLog::error($error->getMessage());
+        $status = 1;
+    }
+    if (!isset($options['loop'])) break;
+    // Sleep in small steps so SIGTERM can end the service promptly. Never spin
+    // when a poll takes longer than the configured interval.
+    $next = max($started + $interval, microtime(true) + 1);
+    while ($running && microtime(true) < $next) usleep(200000);
+} while ($running);
+BridgeLog::info('Bridge stopped');
+flock($lock, LOCK_UN);
+fclose($lock);
+exit($running ? $status : 0);

@@ -10,6 +10,7 @@ class weishauptWP implements poller {
 	protected $curlobj;
 	protected $url;
 	protected $ch;
+	protected $error = 'Retrieval failed';
 	protected $protocol = 'http';
 		
 	//get configuration
@@ -58,6 +59,7 @@ class weishauptWP implements poller {
 		$opts = [
 			'http'=> [
 				'method'=> 'GET',
+				'timeout'=> 20,
 				'header'=> "Accept-Language: de-DE,de,en-US,en\r\n".
 				"Authorization: Basic $auth\r\n"
 				]
@@ -70,14 +72,16 @@ class weishauptWP implements poller {
 		
 	//connect to url
 		$json = file_get_contents($this->url,false,$this->_authHeader());
-		$json = mb_convert_encoding($json, 'HTML-ENTITIES', "UTF-8");
+		if ($json === false || $json === '') {
+			$this->error = 'Could not load data';
+			return false;
+		}
 		$json = preg_replace('/<!--tagparser.*-->/','',$json);
 		$this->data = json_decode($json,true);
 //		$this->data = @json_decode($json,true);
 		if (!is_array($this->data) && !is_object($this->data)) {
 			//no valid data
-			$this->error = 'Invalid JSON: '.$json;
-			echo 'Letzter Fehler: ', $json_errors[json_last_error()], PHP_EOL, PHP_EOL;
+			$this->error = 'Invalid JSON: '.json_last_error_msg();
 			return false;
 		}
 		
@@ -157,11 +161,12 @@ class weishauptWP implements poller {
 		
 	}
 	
+	public function getError() { return $this->error ?: 'Retrieval failed'; }
+
 	public function getData() {
 	//return all data to pollpush
 		if (!$this->publishto) {
 			if (!$this->retrieve()) {
-				echo $this->error."\n";
 				return [];
 			}			
 		}

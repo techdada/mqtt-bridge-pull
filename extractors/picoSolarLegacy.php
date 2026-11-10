@@ -10,6 +10,7 @@ class picoSolarLegacy implements poller {
 	protected $curlobj;
 	protected $url;
 	protected $ch;
+	protected $error;
 	protected $protocol = 'http';
 
 	protected $dxsEntries = array(
@@ -28,6 +29,7 @@ class picoSolarLegacy implements poller {
 		$opts = [
 			'http'=> [
 				'method'=> 'GET',
+				'timeout'=> 20,
 				'header'=> "Accept-Language: de-DE,de,en-US,en\r\n".
 				"Authorization: Basic $auth\r\n"
 				]
@@ -52,14 +54,19 @@ class picoSolarLegacy implements poller {
 
 	public function retrieve() {
 	//connect to url
+		$this->publishto = [];
+		$this->data = ['dxsEntries' => []];
 
 		$html = file_get_contents($this->url,false,$this->_authHeader());
 		if ( !$html || empty($html) ) {
 			$this->error = 'Could not load data';
+			return false;
 		}
-		echo "Connected to {$this->url}\n";
 		$dom = new DOMDocument();
-		@$dom->loadHTML($html);
+		if (!@$dom->loadHTML($html)) {
+			$this->error = 'Could not parse HTML';
+			return false;
+		}
 
 		$elems = $dom->getElementsByTagName('td');
 		//print_r($dom->getC);
@@ -72,14 +79,14 @@ class picoSolarLegacy implements poller {
 
 		//distribute array to mqtt single topics
 		//$this->publishto = $this->data['dxsEntries'];
-		if (!isset($this->data['dxsEntries'])) {
-			echo "no dxsEntries found\n";
-			return;
+		if (array_diff(array_values($this->dxsEntries), array_keys($this->data['dxsEntries']))) {
+			$this->error = 'Missing inverter data fields';
+			return false;
 		}
 		$this->publishto['ac_output'] = $this->data['dxsEntries']['ac_output'];
 		$this->publishto['dc_output'] = (
 			floatval($this->data['dxsEntries']['dc_output_1v']) * floatval($this->data['dxsEntries']['dc_output_1a']) )
-			+ ( floatval($this->data['dxsEntries']['dc_output_1v']) * floatval($this->data['dxsEntries']['dc_output_1a'])
+			+ ( floatval($this->data['dxsEntries']['dc_output_2v']) * floatval($this->data['dxsEntries']['dc_output_2a'])
 		);
 		$this->publishto['daily_yield'] = $this->data['dxsEntries']['daily_yield'];
 		$this->publishto['total_yield'] = $this->data['dxsEntries']['total_yield'];
@@ -97,7 +104,7 @@ class picoSolarLegacy implements poller {
 		$clean = preg_replace('/[\x00-\x1F\x7F]/', '', $value);
 		$clean = str_replace('&nbsp',"",$clean);
 		$clean = str_replace(["xxx","x x x","X X X", "XXX"],"0",$clean);
-		return addslashes($clean);
+		return trim($clean);
 	}
 
 	protected function _numOpStat($value) {
@@ -106,11 +113,12 @@ class picoSolarLegacy implements poller {
 	}
 
 
+	public function getError() { return $this->error ?: 'Retrieval failed'; }
+
 	public function getData() {
 	//return all data to pollpush
 		if (!$this->publishto) {
 			if (!$this->retrieve()) {
-				echo $this->error."\n";
 				return [];
 			}
 		}
